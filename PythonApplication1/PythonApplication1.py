@@ -277,7 +277,7 @@ How to use:
 
     layout_type = st.radio(
         "Sheet layout",
-        ["IBA-like (screenshot style)", "Already normalized"],
+        ["IBA-like", "Already normalized"],
         index=0,
         key="layout_type",
     )
