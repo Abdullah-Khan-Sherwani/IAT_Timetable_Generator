@@ -123,7 +123,7 @@ def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(start_t, time) and isinstance(end_t, time):
             time_key = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
         teacher_key = teacher if teacher else "Unknown"
-        section_id = f"{course_code}|{teacher_key}|{time_key}"
+        section_id = f"{course_code}|{teacher_key}|{d}|{time_key}"
 
         for d in daypair:
             tidy_rows.append(
@@ -184,8 +184,6 @@ def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
     # st.write(out[out['teacher'].str.contains("ahsan", case=False, na=False)])
 
     return out
-
-
 
 # ------------------------------
 # Clash detection
