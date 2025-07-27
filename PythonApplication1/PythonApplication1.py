@@ -337,38 +337,37 @@ def main():
     st.markdown(
         """
 How to use:
-1. Make your Google Sheet (tab) public or "anyone with the link can view".
+1. Make your Google Sheet (tab) public or “anyone with the link can view.”
 2. Paste the CSV export URL(s):  
-   https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv&gid=<GID>  
+   `https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv&gid=<GID>`  
    (one per worksheet/tab) below.
 3. Pick layout type:
-   - IBA-like (Mon/Wed | Tue/Thu | Fri/Sat blocks per row)
-   - Already normalized (columns: course_code, section/section_id, day, start, end, ...)
-4. Select courses (and optionally teachers) and generate all clash‑free schedules.
+   - IBA‑like (Mon/Wed | Tue/Thu | Fri/Sat blocks per row)
+   - Already normalized (columns: course_code, section/section_id, day, start, end, …)
+4. Select courses (and optionally teachers, days, times) and generate all clash‑free schedules.
         """
     )
 
-    csv_urls_input = st.text_area(
-        "CSV export URL(s) - one per line",
-        value="",
-        placeholder="Paste one or more CSV export links here...",
-        key="csv_urls_input",
-    )
-    if not csv_urls_input.strip():
+    # — Input CSV URLs —
+    csv_urls = [u.strip() for u in st.text_area(
+        "CSV export URL(s) – one per line",
+        placeholder="Paste one or more CSV export links here…",
+        key="csv_urls_input"
+    ).splitlines() if u.strip()]
+    if not csv_urls:
         st.info("Paste at least one CSV URL to continue.")
         st.stop()
 
-    csv_urls = [u.strip() for u in csv_urls_input.splitlines() if u.strip()]
-
+    # — Layout choice —
     layout_type = st.radio(
         "Sheet layout",
         ["IBA-like", "Already normalized"],
         index=0,
-        key="layout_type",
+        key="layout_type"
     )
 
-    # ---------- Load & normalize ----------
-    with st.spinner("Loading & normalizing ..."):
+    # — Load & normalize —
+    with st.spinner("Loading & normalizing …"):
         tidy_all = []
         for url in csv_urls:
             raw = pd.read_csv(url, header=None if layout_type.startswith("IBA") else 0)
@@ -377,71 +376,166 @@ How to use:
             else:
                 tidy = normalize_already_tidy(raw)
             tidy_all.append(tidy)
-
         df = pd.concat(tidy_all, ignore_index=True)
         df = df.dropna(subset=["start", "end", "day"])
         df["start"] = df["start"].apply(lambda t: t if isinstance(t, time) else t)
         df["end"]   = df["end"].apply(lambda t: t if isinstance(t, time) else t)
 
-    st.subheader("Normalized data (preview)")
+        st.subheader("Normalized data (preview)")
     st.dataframe(df.head(1000))
 
-    # ---------- Course selection ----------
-    courses = sorted(df["course_code"].astype(str).unique())
-    chosen = st.multiselect("Pick your courses", courses, key="pick_courses")
+    # — Optional: Manually unify duplicate courses —
+    # — Optional: Merge duplicate courses manually —
+    if "course_merge_map" not in st.session_state:
+        st.session_state.course_merge_map = {}
 
+    with st.expander("🔄 Merge duplicate course entries"):
+        all_codes = sorted(df["course_code"].astype(str).unique())
+        remaining = [c for c in all_codes if c not in st.session_state.course_merge_map]
+
+        with st.form("merge_form"):
+            to_merge = st.multiselect("Select course variants to merge", remaining)
+            default_canon = to_merge[0] if to_merge else ""
+            canonical = st.text_input("Unified course code/name", value=default_canon)
+            submitted = st.form_submit_button("Add merge")
+
+            if submitted:
+                if to_merge and canonical.strip():
+                    for v in to_merge:
+                        st.session_state.course_merge_map[v] = canonical.strip()
+                    # apply right away:
+                    df["course_code"] = df["course_code"].map(
+                        lambda x: st.session_state.course_merge_map.get(x, x)
+                    )
+                    df["course_name"] = df["course_name"].map(
+                        lambda x: st.session_state.course_merge_map.get(x, x)
+                    )
+                    st.success(f"Merged {to_merge} → **{canonical.strip()}**")
+                else:
+                    st.warning("Please select at least one variant *and* enter a canonical name.")
+
+    # Now *outside* the form*, show the full list of merges:
+        # — Now that course_merge_map is up‑to‑date, apply it on every render —
+    if st.session_state.course_merge_map:
+        df["course_code"] = df["course_code"].map(
+            lambda x: st.session_state.course_merge_map.get(x, x)
+        )
+        df["course_name"] = df["course_name"].map(
+            lambda x: st.session_state.course_merge_map.get(x, x)
+        )
+
+    # — Course selection (exclude labs) —
+    courses = sorted([
+        c for c in df["course_code"].astype(str).unique()
+        if "lab" not in c.lower()
+    ])
+    chosen = st.multiselect("Pick your courses", courses, key="pick_courses")
     if not chosen:
         st.stop()
 
-    # ---------- Optional teacher filters ----------
-    teacher_filters: Dict[str, set] = {}
+    # — Define IBA time‐slots —
+    time_slots = [
+        ("8:30 AM", "9:45 AM"), ("10:00 AM", "11:15 AM"),
+        ("11:30 AM", "12:45 PM"), ("1:00 PM", "2:15 PM"),
+        ("2:30 PM", "3:45 PM"), ("4:00 PM", "5:15 PM"),
+        ("5:30 PM", "6:45 PM")
+    ]
+    # convert to time objects
+    slot_objs = []
+    for s, e in time_slots:
+        slot_objs.append((
+            datetime.strptime(s, "%I:%M %p").time(),
+            datetime.strptime(e, "%I:%M %p").time()
+        ))
+    slot_labels = [f"{s} to {e}" for s, e in time_slots]
+
+    # — Optional: Day filters per course —
+    day_options = ["Mon","Tue","Wed","Thu","Fri","Sat"]
+    day_filters = {}
+    with st.expander("Optional: filter days per course"):
+        for c in chosen:
+            sel = st.multiselect(
+                f"Allowed days for {c} (leave empty = all)",
+                day_options,
+                default=day_options,
+                key=f"day_filter_{c}"
+            )
+            day_filters[c] = set(sel) if sel else set(day_options)
+
+    # — Optional: Time‐slot filters per course —
+    time_filters = {}
+    with st.expander("Optional: filter time slots per course"):
+        for c in chosen:
+            sel = st.multiselect(
+                f"Allowed time slots for {c} (leave empty = all)",
+                slot_labels,
+                default=slot_labels,
+                key=f"time_filter_{c}"
+            )
+            if sel:
+                idxs = [i for i,label in enumerate(slot_labels) if label in sel]
+                time_filters[c] = {slot_objs[i] for i in idxs}
+            else:
+                time_filters[c] = set(slot_objs)
+
+    # — Apply day & time filters —
+    mask = pd.Series(True, index=df.index)
+    for c in chosen:
+        bad_secs = set()
+        sub = df[df.course_code == c]
+        for sid, grp in sub.groupby("section_id"):
+            days_ok = set(grp["day"]).issubset(day_filters[c])
+            times_ok = all(
+                (row["start"], row["end"]) in time_filters[c]
+                for _, row in grp.iterrows()
+            )
+            if not (days_ok and times_ok):
+                bad_secs.add(sid)
+        mask &= ~((df.course_code == c) & df.section_id.isin(bad_secs))
+    filtered_df = df[mask]
+
+    # — Optional: Teacher filters —
+    teacher_filters = {}
     with st.expander("Optional: filter teachers per course"):
         for c in chosen:
-            teachers = sorted(
-                df.loc[df.course_code.astype(str) == c, "teacher"]
-                  .dropna()
-                  .astype(str)
-                  .unique()
+            tlist = sorted(
+                filtered_df[filtered_df.course_code == c]["teacher"]
+                .dropna().astype(str).unique()
             )
             sel = st.multiselect(
                 f"Allowed teachers for {c} (leave empty = all)",
-                teachers,
-                default=teachers,
-                key=f"teacher_filter_{c}",
+                tlist,
+                default=tlist,
+                key=f"teacher_filter_{c}"
             )
-            teacher_filters[c] = set(sel) if sel else set(teachers)
+            teacher_filters[c] = set(sel) if sel else set(tlist)
 
-    # Apply filters to build the dataframe we'll actually solve on
-    mask = pd.Series(False, index=df.index)
+    # — Apply teacher filters —
+    mask = pd.Series(False, index=filtered_df.index)
     for c in chosen:
-        allowed = teacher_filters.get(c, set())
         mask |= (
-            (df.course_code.astype(str) == c) &
-            (df.teacher.isna() | df.teacher.astype(str).isin(list(allowed)))
+            (filtered_df.course_code == c) &
+            (filtered_df.teacher.isna() |
+             filtered_df.teacher.isin(teacher_filters[c]))
         )
-    use_df = df[mask]
+    use_df = filtered_df[mask]
 
-    # ---------- Section manager & lab linker ----------
-    # 1) SECTION MANAGER
+    # — Section manager —
     st.subheader("🔧 Manage Sections")
-    available = {}
-    for course, group in use_df.groupby("course_code"):
-        available[course] = sorted(
-            {m["section_id"] for m in group.to_dict("records")}
-        )
-
+    available = {
+        course: sorted({r["section_id"] for r in grp.to_dict("records")})
+        for course, grp in use_df.groupby("course_code")
+    }
     section_selection = {}
     for course in chosen:
-        sec_list = available.get(course, [])
-        default = sec_list.copy()
+        secs = available.get(course, [])
         picked = st.multiselect(
             f"{course}: pick sections",
-            sec_list,
-            default=default,
+            secs,
+            default=secs,
             key=f"section_mgr_{course}"
         )
         section_selection[course] = set(picked)
-
     mask2 = pd.Series(False, index=use_df.index)
     for course, secs in section_selection.items():
         mask2 |= (
@@ -450,57 +544,67 @@ How to use:
         )
     use_df = use_df[mask2]
 
-    # 2) LAB LINKER PER SECTION
-    st.subheader("🔗 Link Labs to Lecture Sections")
-    lab_df = df[df["course_name"].str.contains("Lab", case=False, na=False)].copy()
-    lab_sections_by_course = {}
-    for _, row in lab_df.iterrows():
-        parent = re.sub(r"\s*\(Lab\).*", "", row["course_code"], flags=re.IGNORECASE)
-        lab_sections_by_course.setdefault(parent, set()).add(row["section_id"])
+   # — Lab linker per lecture‐section —
+    st.subheader("🔗 Attach any section (e.g. lab) to a lecture section")
 
-    if "lab_links" not in st.session_state:
-        st.session_state.lab_links = {}
+    # a) Build a mapping: section_id → human‑readable label
+    days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    section_labels: Dict[str, str] = {}
+    for sid, grp in df.groupby("section_id"):
+        row0    = grp.iloc[0]
+        code    = row0["course_code"]
+        teacher = row0["teacher"] or "Unknown"
+        days = sorted(grp["day"].unique(), key=lambda d: days_order.index(d))
+        times = sorted({
+            f"{r['start'].strftime('%H:%M')}-{r['end'].strftime('%H:%M')}"
+            for _, r in grp.iterrows() if hasattr(r["start"], "hour")
+        })
+        label = f"{code} | Days: {'/'.join(days)} | Times: {'/'.join(times)} | {teacher}"
+        section_labels[sid] = label
 
-    with st.expander("Link labs to each lecture section"):
+    all_sids = list(section_labels.keys())
+
+    # b) Initialize session‐state mapping: lecture_section_id ➔ [linked_section_ids]
+    if "section_links" not in st.session_state:
+        st.session_state.section_links = {}
+
+    # c) UI: one multiselect *per* lecture section
+    with st.expander("Link additional sections (labs, tutorials, etc.)"):
         for course, secs in section_selection.items():
-            labs_for_course = sorted(lab_sections_by_course.get(course, []))
-            if not labs_for_course:
-                continue
             for sec in secs:
-                default = st.session_state.lab_links.get(sec, [])
-                chosen_labs = st.multiselect(
-                    f"Section {sec}: link labs",
-                    labs_for_course,
+                default = st.session_state.section_links.get(sec, [])
+                picked = st.multiselect(
+                    f"Attach sections to {course} [{sec}]:",
+                    options=all_sids,
                     default=default,
-                    key=f"lablink_{sec}"
+                    key=f"section_link_{sec}",
+                    format_func=lambda sid: section_labels[sid],
+                    help="Pick any section (lab/tutorial) you want to include with this lecture section."
                 )
-                st.session_state.lab_links[sec] = chosen_labs
+                st.session_state.section_links[sec] = picked
 
-    extra = []
-    for sec, labs in st.session_state.lab_links.items():
-        extra.extend(lab_df[lab_df.section_id.isin(labs)].to_dict("records"))
+    # d) Merge in exactly the rows for each linked section_id
+    extra_rows = []
+    for lecture_sec, linked_sids in st.session_state.section_links.items():
+        if linked_sids:
+            extra_rows.extend(
+                df[df["section_id"].isin(linked_sids)]
+                .to_dict("records")
+            )
 
-    if extra:
-        use_df = pd.concat([use_df, pd.DataFrame(extra)], ignore_index=True)
+    if extra_rows:
+        use_df = pd.concat([use_df, pd.DataFrame(extra_rows)], ignore_index=True)
 
-    # Now build groups & generate as before:
-    groups = build_course_groups(use_df)
-    schedules = generate_all_schedules(groups)
 
-    # ---------- Generate (auto) ----------
-    # 1) Let the user pick how many to show, up front
-    max_show = st.number_input(
-        "Max schedules to show", 1, 2000, value=500, key="max_show"
-    )
 
+    # — Generate & display —
+    max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
     with st.spinner("Computing all clash‑free schedules…"):
         schedules = compute_schedules(use_df)
+    st.success(f"Found {len(schedules)} clash‑free schedules.")
 
-    st.success(f"Found {len(schedules)} clash-free schedules.")
-
-    # Display the first N automatically
-    for i, sched in enumerate(schedules[:max_show]):
-        st.markdown(f"### Schedule #{i+1}")
+    for idx, sched in enumerate(schedules[:max_show], 1):
+        st.markdown(f"### Schedule #{idx}")
         render_weekly_grid(sched)
 
     if len(schedules) > max_show:
