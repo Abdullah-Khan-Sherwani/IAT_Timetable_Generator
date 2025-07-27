@@ -5,9 +5,18 @@ from datetime import datetime, time
 from typing import Dict, List, Tuple
 from rapidfuzz import process
 
+import plotly.express as px
 import pandas as pd
 import streamlit as st
 
+@st.cache_data(show_spinner=False)
+def compute_schedules(use_df):
+    """
+    Build groups and generate clash-free schedules.
+    Cached so it only reruns when `use_df` changes.
+    """
+    groups = build_course_groups(use_df)
+    return generate_all_schedules(groups)
 
 # ==============================
 # --------- CONFIG -------------
@@ -29,6 +38,79 @@ def fuzzy_deduplicate(names, cutoff=85):
             unique.append(n)
             mapping[n] = n
     return mapping
+
+def render_weekly_grid(sched):
+    # 1) Define the fixed IBA slots
+    time_labels = [
+        "08:30-09:45", "10:00-11:15", "11:30-12:45",
+        "13:00-14:15", "14:30-15:45", "16:00-17:15",
+        "17:30-18:45"
+    ]
+    days = ["Mon","Tue","Wed","Thu","Fri","Sat"]
+
+    # 2) Build an empty grid
+    grid = {slot: {d: "" for d in days} for slot in time_labels}
+
+    # 3) Fill it from the schedule
+    df_sched = pd.DataFrame(sched)
+    for _, row in df_sched.iterrows():
+        slot = f"{row['start'].strftime('%H:%M')}-{row['end'].strftime('%H:%M')}"
+        d   = row["day"]
+        if slot in grid and d in days:
+            # you can tweak to show teacher, section_id, etc.
+            grid[slot][d] = f"{row['course_code']}<br><small>{row['room']}</small>"
+
+    # 4) Generate HTML table
+    header = "<th style='border:1px solid #ddd;padding:4px'>Time</th>" + \
+             "".join(f"<th style='border:1px solid #ddd;padding:4px'>{d}</th>" for d in days)
+    rows = ""
+    for slot in time_labels:
+        row_html = f"<td style='border:1px solid #ddd;padding:4px'>{slot}</td>" + \
+                   "".join(f"<td style='border:1px solid #ddd;padding:4px'>{grid[slot][d]}</td>"
+                           for d in days)
+        rows += f"<tr>{row_html}</tr>"
+
+    table = f"""
+    <table style='border-collapse: collapse; width: 100%; text-align: center;'>
+      <thead><tr>{header}</tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    """
+
+    st.subheader("📋 Weekly Timetable Grid")
+    st.write(table, unsafe_allow_html=True)
+
+def show_calendar(sched):
+    # Build DataFrame
+    df_sched = pd.DataFrame(sched)
+
+    # Anchor times to a dummy date so we can plot just times of day
+    def to_dt(t):
+        return datetime(2025,1,1,t.hour,t.minute) if hasattr(t, "hour") else None
+
+    df_sched["start_dt"] = df_sched["start"].apply(to_dt)
+    df_sched["end_dt"]   = df_sched["end"].apply(to_dt)
+
+    # Make the timeline
+    fig = px.timeline(
+        df_sched,
+        x_start="start_dt",
+        x_end="end_dt",
+        y="day",
+        color="course_code",
+        text="course_code",
+        hover_data=["room","teacher"]
+    )
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=["Mon","Tue","Wed","Thu","Fri","Sat"]
+    )
+    fig.update_xaxes(tickformat="%H:%M", dtick=3600000)
+    fig.update_layout(height=500, margin={"l":0,"r":0,"t":30,"b":0}, showlegend=False)
+
+    st.subheader("📅 Weekly Timetable")
+    st.plotly_chart(fig, use_container_width=True)
+
 
 def normalize_course_name(name: str) -> str:
     if not isinstance(name, str):
@@ -250,7 +332,7 @@ def generate_all_schedules(course_groups: Dict[str, List[List[dict]]]) -> List[L
 # ---------------- Streamlit APP -----------------------
 # ======================================================
 def main():
-    st.title("Timetable Generator (Streamlit, Python)")
+    st.title("IAT Timetable Generator")
 
     st.markdown(
         """
@@ -260,7 +342,7 @@ How to use:
    https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv&gid=<GID>  
    (one per worksheet/tab) below.
 3. Pick layout type:
-   - IBA-like layout (Mon/Wed | Tue/Thu | Fri/Sat blocks per row)
+   - IBA-like (Mon/Wed | Tue/Thu | Fri/Sat blocks per row)
    - Already normalized (columns: course_code, section/section_id, day, start, end, ...)
 4. Select courses (and optionally teachers) and generate all clash‑free schedules.
         """
@@ -294,7 +376,7 @@ How to use:
                 tidy = normalize_from_iba_like_layout(raw)
             else:
                 tidy = normalize_already_tidy(raw)
-            tidy_all.append(tidy)  # <--- important!
+            tidy_all.append(tidy)
 
         df = pd.concat(tidy_all, ignore_index=True)
         df = df.dropna(subset=["start", "end", "day"])
@@ -303,17 +385,6 @@ How to use:
 
     st.subheader("Normalized data (preview)")
     st.dataframe(df.head(1000))
-
-
-    # Debug
-    st.write("Row 8 raw:", raw.iloc[6].tolist())
-    # st.write("Row 8 raw:", raw.iloc[6].tolist())
-    # st.write("Row 55 raw:", raw.iloc[53].tolist())
-    # st.write("Row 102 raw:", raw.iloc[100].tolist())
-    # st.write("Row 150 raw:", raw.iloc[148].tolist())
-    # st.write("Row 197 raw:", raw.iloc[195].tolist())
-    # st.write("Row 244 raw:", raw.iloc[242].tolist())
-    # st.write("Row 291 raw:", raw.iloc[289].tolist())
 
     # ---------- Course selection ----------
     courses = sorted(df["course_code"].astype(str).unique())
@@ -344,7 +415,6 @@ How to use:
     mask = pd.Series(False, index=df.index)
     for c in chosen:
         allowed = teacher_filters.get(c, set())
-        # allow rows with teacher NaN OR in allowed list
         mask |= (
             (df.course_code.astype(str) == c) &
             (df.teacher.isna() | df.teacher.astype(str).isin(list(allowed)))
@@ -354,18 +424,15 @@ How to use:
     # ---------- Section manager & lab linker ----------
     # 1) SECTION MANAGER
     st.subheader("🔧 Manage Sections")
-    # Build a mapping: course_code -> list of section_ids
     available = {}
     for course, group in use_df.groupby("course_code"):
         available[course] = sorted(
             {m["section_id"] for m in group.to_dict("records")}
         )
 
-    # Let user pick which section_ids they actually want considered
     section_selection = {}
     for course in chosen:
         sec_list = available.get(course, [])
-        # default = all
         default = sec_list.copy()
         picked = st.multiselect(
             f"{course}: pick sections",
@@ -375,7 +442,6 @@ How to use:
         )
         section_selection[course] = set(picked)
 
-    # Filter use_df down to only those section_ids
     mask2 = pd.Series(False, index=use_df.index)
     for course, secs in section_selection.items():
         mask2 |= (
@@ -384,63 +450,89 @@ How to use:
         )
     use_df = use_df[mask2]
 
-    # 2) LAB LINKER
-    st.subheader("🔗 Link Labs to Courses")
-    # detect “lab” courses by a simple name heuristic (tweak as needed)
-    lab_courses = sorted({c for c in df.course_code.unique() if "LAB" in c.upper()})
+    # 2) LAB LINKER PER SECTION
+    st.subheader("🔗 Link Labs to Lecture Sections")
+    lab_df = df[df["course_name"].str.contains("Lab", case=False, na=False)].copy()
+    lab_sections_by_course = {}
+    for _, row in lab_df.iterrows():
+        parent = re.sub(r"\s*\(Lab\).*", "", row["course_code"], flags=re.IGNORECASE)
+        lab_sections_by_course.setdefault(parent, set()).add(row["section_id"])
 
-    # persistent mapping in session state
     if "lab_links" not in st.session_state:
-        st.session_state.lab_links = {}  # course_code -> set(lab_course_codes)
+        st.session_state.lab_links = {}
 
-    with st.expander("Set up lab → course links"):
-        for course in chosen:
-            linked = st.multiselect(
-                f"Link which labs to {course}?",
-                lab_courses,
-                default=st.session_state.lab_links.get(course, []),
-                key=f"lablink_{course}"
-            )
-            st.session_state.lab_links[course] = linked
+    with st.expander("Link labs to each lecture section"):
+        for course, secs in section_selection.items():
+            labs_for_course = sorted(lab_sections_by_course.get(course, []))
+            if not labs_for_course:
+                continue
+            for sec in secs:
+                default = st.session_state.lab_links.get(sec, [])
+                chosen_labs = st.multiselect(
+                    f"Section {sec}: link labs",
+                    labs_for_course,
+                    default=default,
+                    key=f"lablink_{sec}"
+                )
+                st.session_state.lab_links[sec] = chosen_labs
 
-    # Now whenever a course is chosen, also add its linked labs
-    extra_labs = set()
-    for course in chosen:
-        extra_labs.update(st.session_state.lab_links.get(course, []))
-    # Filter the original df to add these lab rows
-    lab_df = df[df.course_code.isin(extra_labs)]
-    # We assume labs don’t need teacher‐filter or section‐mgr; if they do, repeat above
+    extra = []
+    for sec, labs in st.session_state.lab_links.items():
+        extra.extend(lab_df[lab_df.section_id.isin(labs)].to_dict("records"))
 
-    # Finally, merge labs in
-    use_df = pd.concat([use_df, lab_df], ignore_index=True)
+    if extra:
+        use_df = pd.concat([use_df, pd.DataFrame(extra)], ignore_index=True)
 
     # Now build groups & generate as before:
     groups = build_course_groups(use_df)
     schedules = generate_all_schedules(groups)
 
-    # ---------- Generate ----------
-    max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
+    # ---------- Generate (auto) ----------
+    # 1) Let the user pick how many to show, up front
+    max_show = st.number_input(
+        "Max schedules to show", 1, 2000, value=500, key="max_show"
+    )
 
-    if st.button("Generate schedules", key="gen"):
-        groups = build_course_groups(use_df)        # groups by (course_code, section_id)
-        schedules = generate_all_schedules(groups)  # skips intra-section clashes
+    with st.spinner("Computing all clash‑free schedules…"):
+        schedules = compute_schedules(use_df)
 
-        st.success(f"Found {len(schedules)} clash-free schedules.")
-        for i, sched in enumerate(schedules[:max_show]):
-            st.markdown(f"### Schedule #{i+1}")
-            show = (
-                pd.DataFrame(sched)[
-                    ["course_code", "section", "section_id", "course_name",
-                     "teacher", "day", "start", "end", "room"]
-                ]
-                .sort_values(by=["day", "start"])
-            )
-            st.dataframe(show)
+    st.success(f"Found {len(schedules)} clash-free schedules.")
 
-        if len(schedules) > max_show:
-            st.info(f"Showing first {max_show} only.")
+    # Display the first N automatically
+    for i, sched in enumerate(schedules[:max_show]):
+        st.markdown(f"### Schedule #{i+1}")
+        render_weekly_grid(sched)
 
+    if len(schedules) > max_show:
+        st.info(f"Showing first {max_show} only.")
 
+    # # ---------- Generate ----------
+    # max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
+
+    # if st.button("Generate schedules", key="gen"):
+    #     st.success(f"Found {len(schedules)} clash-free schedules.")
+    #     for i, sched in enumerate(schedules[:max_show]):
+    #         st.markdown(f"### Schedule #{i+1}")
+    #         show = (
+    #             pd.DataFrame(sched)[
+    #                 ["course_code", "section", "section_id", "course_name",
+    #                  "teacher", "day", "start", "end", "room"]
+    #             ]
+    #             .sort_values(by=["day", "start"])
+    #         )
+            # st.dataframe(show) # Simple table view
+            # show_calendar(sched) # Plotly calendar view
+    # # better view
+    # if schedules:
+    #     st.subheader("📋 All Weekly Timetable Grids")
+    #     for i, sched in enumerate(schedules):
+    #         st.markdown(f"#### Schedule #{i+1}")
+    #         render_weekly_grid(sched)
+    # else:
+    #     st.info("No schedules to display yet.")
+
+    #     if len(schedules) > max_show:
+    #         st.info(f"Showing first {max_show} only.")
 
 if __name__ == "__main__":
     main()
