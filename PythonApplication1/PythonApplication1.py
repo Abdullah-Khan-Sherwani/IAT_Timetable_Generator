@@ -123,9 +123,14 @@ def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(start_t, time) and isinstance(end_t, time):
             time_key = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
         teacher_key = teacher if teacher else "Unknown"
-        section_id = f"{course_code}|{teacher_key}|{d}|{time_key}"
 
         for d in daypair:
+            # Build a single days_key for the block:
+            days_key = "/".join(daypair)   # e.g. "Mon/Wed" or "Tue/Thu"
+            time_key = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}" if start_t and end_t else ""
+            teacher_key = teacher or "Unknown"
+            section_id = f"{course_code}|{teacher_key}|{days_key}|{time_key}"
+
             tidy_rows.append(
                 dict(
                     course_code=course_code,
