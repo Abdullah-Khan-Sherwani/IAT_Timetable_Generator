@@ -544,94 +544,68 @@ How to use:
         )
     use_df = use_df[mask2]
 
-    # — Lab linker per lecture‐section —
-    st.subheader("🔗 Attach any section (e.g. lab) to a lecture section")
+    # — Lab linker per lecture‑section (by UMS) —
+    st.subheader("🔗 Attach labs to each lecture section (via UMS)")
 
-    # a) Build a mapping: section_id → human‑readable label
-    days_order = ["Mon","Tue","Wed","Thu","Fri","Sat"]
-    section_labels: Dict[str,str] = {}
-    for sid, grp in df.groupby("section_id"):
-        row0    = grp.iloc[0]
-        code    = row0["course_code"]
-        teacher = row0["teacher"] or "Unknown"
-        days    = sorted(grp["day"].unique(), key=lambda d: days_order.index(d))
-        times   = sorted({
-            f"{r['start'].strftime('%H:%M')}-{r['end'].strftime('%H:%M')}"
-            for _, r in grp.iterrows()
-            if hasattr(r["start"], "hour")
-        })
-        section_labels[sid] = f"{code} | Days: {'/'.join(days)} | Times: {'/'.join(times)} | {teacher}"
-
-    all_sids = list(section_labels.keys())
-
-    # b) Init session state
-    if "section_links" not in st.session_state:
-        st.session_state.section_links = {}  # lecture_section_id -> [lab_section_ids...]
-
-    # c) One multiselect per lecture‐section
-    with st.expander("Link additional sections (labs, tutorials, etc.)"):
-        for course, secs in section_selection.items():
-            for sec in secs:
-                default = st.session_state.section_links.get(sec, [])
-                picked  = st.multiselect(
-                    f"Attach sections to {course} [{sec}]:",
-                    options=all_sids,
-                    default=default,
-                    key=f"section_link_{sec}",
-                    format_func=lambda sid: section_labels[sid],
-                    help="Pick any section (lab/tutorial) to include with this lecture section."
-                )
-                st.session_state.section_links[sec] = picked
-    # --- d) Merge labs into their lecture section ---
-    extra_rows = []
-
-    for lecture_sec, lab_sids in st.session_state.section_links.items():
-        # find what course_code that lecture uses:
-        parent_course = use_df.loc[
-             use_df.section_id == lecture_sec, "course_code"
-        ].iat[0]
-
-        for lab_sid in lab_sids:
-            lab_rows = df[df["section_id"] == lab_sid].copy()
-
-            # reassign them into the lecture’s bucket:
-            lab_rows["course_code"] = parent_course
-            lab_rows["section_id"]  = lecture_sec
-
-            extra_rows.extend(lab_rows.to_dict("records"))
-
-    if extra_rows:
-        use_df = pd.concat([use_df, pd.DataFrame(extra_rows)], ignore_index=True)
-
-    # — Generate & display —
-    # — After you’ve built `use_df` and merged in exactly
-    #    the rows for each linked section_id… —
-
-    # 1) keep only the lectures the user picked
-    lect_df = use_df[use_df.course_code.isin(chosen)]
-
-    # 2) gather all the lab‐codes they actually linked
-    all_lab_sids = sum(st.session_state.section_links.values(), [])
-    lab_codes = df[df.section_id.isin(all_lab_sids)]["course_code"].unique().tolist()
-
-    # 3) now build the final scheduling pool
-    sched_df = pd.concat(
-        [lect_df, df[df.course_code.isin(lab_codes)]],
-        ignore_index=True
+    lab_df = df[df["course_name"].str.contains("lab", case=False, na=False)]
+    labs_by_ums = (
+        lab_df.groupby("ums")["section_id"]
+        .unique().apply(list)
+        .to_dict()
     )
 
-    # 4) generate
-    max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
-    with st.spinner("Computing all clash‑free schedules…"):
-        schedules = compute_schedules(sched_df)
-    st.success(f"Found {len(schedules)} clash‑free schedules.")
+    if "lab_links" not in st.session_state:
+        st.session_state.lab_links = {}
 
-    for idx, sched in enumerate(schedules[:max_show], 1):
-        st.markdown(f"### Schedule #{idx}")
-        render_weekly_grid(sched)
+    with st.expander("Pick which labs go with each lecture section"):
+        for course, secs in section_selection.items():
+            for lecture_sec in secs:
+                # pull only labs sharing that UMS
+                lecture_ums = use_df.loc[use_df.section_id == lecture_sec, "ums"]
+                if lecture_ums.empty:
+                    continue
+                options = labs_by_ums.get(lecture_ums.iat[0], [])
+                default = st.session_state.lab_links.get(lecture_sec, options)
+                picked = st.multiselect(
+                    f"Labs for {course} [{lecture_sec}]:",
+                    options=options,
+                    default=default,
+                    key=f"lablink_{lecture_sec}",
+                    help="Only labs with the same UMS will appear here."
+                )
+                st.session_state.lab_links[lecture_sec] = picked
 
-    if len(schedules) > max_show:
-        st.info(f"Showing first {max_show} only.")
+    # merge the picked labs into use_df under the same lecture section
+    extra = []
+    for lecture_sec, lab_sids in st.session_state.lab_links.items():
+        if not lab_sids:
+            continue
+
+        lecture_rows = use_df[use_df.section_id == lecture_sec]
+        if lecture_rows.empty:
+            continue  # nothing to attach to!
+
+        parent_course = lecture_rows["course_code"].iat[0]
+        labs = df[df["section_id"].isin(lab_sids)].copy()
+        labs["course_code"] = parent_course
+        labs["section_id"]  = lecture_sec
+        extra.append(labs)
+
+    if extra:
+        use_df = pd.concat([use_df, pd.concat(extra, ignore_index=True)], ignore_index=True)
+
+        # 4) generate
+        max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
+        with st.spinner("Computing all clash‑free schedules…"):
+            schedules = compute_schedules(sched_df)
+        st.success(f"Found {len(schedules)} clash‑free schedules.")
+
+        for idx, sched in enumerate(schedules[:max_show], 1):
+            st.markdown(f"### Schedule #{idx}")
+            render_weekly_grid(sched)
+
+        if len(schedules) > max_show:
+            st.info(f"Showing first {max_show} only.")
 
 
     # # ---------- Generate ----------
