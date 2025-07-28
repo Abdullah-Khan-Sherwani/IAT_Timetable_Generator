@@ -39,7 +39,7 @@ def fuzzy_deduplicate(names, cutoff=85):
             mapping[n] = n
     return mapping
 
-def render_weekly_grid(sched):
+def render_weekly_grid(sched: List[dict], lab_map: Dict[str, List[Tuple[str, time, time]]] = None):
     # 1) Define the fixed IBA slots
     time_labels = [
         "08:30-09:45", "10:00-11:15", "11:30-12:45",
@@ -51,23 +51,54 @@ def render_weekly_grid(sched):
     # 2) Build an empty grid
     grid = {slot: {d: "" for d in days} for slot in time_labels}
 
-    # 3) Fill it from the schedule
+    # 3) Fill lectures into the grid
     df_sched = pd.DataFrame(sched)
     for _, row in df_sched.iterrows():
         slot = f"{row['start'].strftime('%H:%M')}-{row['end'].strftime('%H:%M')}"
-        d   = row["day"]
-        if slot in grid and d in days:
-            # you can tweak to show teacher, section_id, etc.
-            grid[slot][d] = f"{row['course_code']}<br><small>{row['room']}</small>"
+        d    = row["day"]
+        cell = (
+            f"{row['course_code']}<br>"
+            f"<small>UMS {row['ums']} | {row['teacher']} | Room {row['room']}</small>"
+        )
 
-    # 4) Generate HTML table
-    header = "<th style='border:1px solid #ddd;padding:4px'>Time</th>" + \
-             "".join(f"<th style='border:1px solid #ddd;padding:4px'>{d}</th>" for d in days)
+        
+        # if this section has any labs linked, append them when they land here:
+        # sid = row["section_id"]
+        # if lab_map and sid in lab_map:
+        #     for lday, lstart, lend in lab_map[sid]:
+        #         lslot = f"{lstart.strftime('%H:%M')}-{lend.strftime('%H:%M')}"
+        #         if lday == d and lslot == slot:
+        #             cell += f"<br><em>(Lab {lslot})</em>"
+
+        grid[slot][d] = cell
+
+    # 4) Render linked labs in their own cells, showing parent course + “(linked)”
+    if lab_map:
+        # we already loaded df_sched above
+        for lecture_sec, labs in lab_map.items():
+            # grab the parent course_code for this lecture section
+            parent = df_sched.loc[df_sched["section_id"] == lecture_sec, "course_code"].iat[0]
+            for lab_day, lab_start, lab_end in labs:
+                lab_slot = f"{lab_start.strftime('%H:%M')}-{lab_end.strftime('%H:%M')}"
+                if lab_slot in grid and lab_day in days:
+                    grid[lab_slot][lab_day] = (
+                        f"{parent}<br>"
+                        f"<small>Lab (linked)</small>"
+                    )
+
+
+    # 5) Render HTML table
+    header = (
+        "<th style='border:1px solid #ddd;padding:4px'>Time</th>"
+        + "".join(f"<th style='border:1px solid #ddd;padding:4px'>{d}</th>" for d in days)
+    )
     rows = ""
     for slot in time_labels:
-        row_html = f"<td style='border:1px solid #ddd;padding:4px'>{slot}</td>" + \
-                   "".join(f"<td style='border:1px solid #ddd;padding:4px'>{grid[slot][d]}</td>"
-                           for d in days)
+        row_html = (
+            f"<td style='border:1px solid #ddd;padding:4px'>{slot}</td>"
+            + "".join(f"<td style='border:1px solid #ddd;padding:4px'>{grid[slot][d]}</td>"
+                      for d in days)
+        )
         rows += f"<tr>{row_html}</tr>"
 
     table = f"""
@@ -327,7 +358,6 @@ def generate_all_schedules(course_groups: Dict[str, List[List[dict]]]) -> List[L
             valid.append(flat)
     return valid
 
-
 # ======================================================
 # ---------------- Streamlit APP -----------------------
 # ======================================================
@@ -381,29 +411,38 @@ How to use:
         df["start"] = df["start"].apply(lambda t: t if isinstance(t, time) else t)
         df["end"]   = df["end"].apply(lambda t: t if isinstance(t, time) else t)
 
-        st.subheader("Normalized data (preview)")
+    st.subheader("Normalized data (preview)")
     st.dataframe(df.head(1000))
 
-    # — Optional: Manually unify duplicate courses —
-    # — Optional: Merge duplicate courses manually —
+    # — Optional: Manually unify duplicate courses — 
     if "course_merge_map" not in st.session_state:
         st.session_state.course_merge_map = {}
 
     with st.expander("🔄 Merge duplicate course entries"):
+        # all codes that haven’t yet been remapped
         all_codes = sorted(df["course_code"].astype(str).unique())
         remaining = [c for c in all_codes if c not in st.session_state.course_merge_map]
 
         with st.form("merge_form"):
-            to_merge = st.multiselect("Select course variants to merge", remaining)
+            to_merge = st.multiselect(
+                "Select course variants to merge",
+                remaining,
+                help="Ctrl/Cmd+click to pick all typo‑variants of one course",
+            )
+            # default canonical = first selected variant
             default_canon = to_merge[0] if to_merge else ""
-            canonical = st.text_input("Unified course code/name", value=default_canon)
+            canonical = st.text_input(
+                "Unified course code/name",
+                value=default_canon,
+                help="What single code/name should all those variants become?"
+            )
             submitted = st.form_submit_button("Add merge")
 
             if submitted:
                 if to_merge and canonical.strip():
                     for v in to_merge:
                         st.session_state.course_merge_map[v] = canonical.strip()
-                    # apply right away:
+                    # apply immediately
                     df["course_code"] = df["course_code"].map(
                         lambda x: st.session_state.course_merge_map.get(x, x)
                     )
@@ -414,111 +453,40 @@ How to use:
                 else:
                     st.warning("Please select at least one variant *and* enter a canonical name.")
 
-    # Now *outside* the form*, show the full list of merges:
-        # — Now that course_merge_map is up‑to‑date, apply it on every render —
+    # Always apply any existing merges on each rerun
     if st.session_state.course_merge_map:
         df["course_code"] = df["course_code"].map(
             lambda x: st.session_state.course_merge_map.get(x, x)
         )
         df["course_name"] = df["course_name"].map(
             lambda x: st.session_state.course_merge_map.get(x, x)
-        )
+    )
 
     # — Course selection (exclude labs) —
-    courses = sorted([
-        c for c in df["course_code"].astype(str).unique()
-        if "lab" not in c.lower()
-    ])
+    courses = sorted([c for c in df["course_code"].astype(str).unique() if "lab" not in c.lower()])
     chosen = st.multiselect("Pick your courses", courses, key="pick_courses")
     if not chosen:
         st.stop()
-
-    # — Define IBA time‐slots —
-    time_slots = [
-        ("8:30 AM", "9:45 AM"), ("10:00 AM", "11:15 AM"),
-        ("11:30 AM", "12:45 PM"), ("1:00 PM", "2:15 PM"),
-        ("2:30 PM", "3:45 PM"), ("4:00 PM", "5:15 PM"),
-        ("5:30 PM", "6:45 PM")
-    ]
-    # convert to time objects
-    slot_objs = []
-    for s, e in time_slots:
-        slot_objs.append((
-            datetime.strptime(s, "%I:%M %p").time(),
-            datetime.strptime(e, "%I:%M %p").time()
-        ))
-    slot_labels = [f"{s} to {e}" for s, e in time_slots]
-
-    # — Optional: Day filters per course —
-    day_options = ["Mon","Tue","Wed","Thu","Fri","Sat"]
-    day_filters = {}
-    with st.expander("Optional: filter days per course"):
-        for c in chosen:
-            sel = st.multiselect(
-                f"Allowed days for {c} (leave empty = all)",
-                day_options,
-                default=day_options,
-                key=f"day_filter_{c}"
-            )
-            day_filters[c] = set(sel) if sel else set(day_options)
-
-    # — Optional: Time‐slot filters per course —
-    time_filters = {}
-    with st.expander("Optional: filter time slots per course"):
-        for c in chosen:
-            sel = st.multiselect(
-                f"Allowed time slots for {c} (leave empty = all)",
-                slot_labels,
-                default=slot_labels,
-                key=f"time_filter_{c}"
-            )
-            if sel:
-                idxs = [i for i,label in enumerate(slot_labels) if label in sel]
-                time_filters[c] = {slot_objs[i] for i in idxs}
-            else:
-                time_filters[c] = set(slot_objs)
-
-    # — Apply day & time filters —
-    mask = pd.Series(True, index=df.index)
-    for c in chosen:
-        bad_secs = set()
-        sub = df[df.course_code == c]
-        for sid, grp in sub.groupby("section_id"):
-            days_ok = set(grp["day"]).issubset(day_filters[c])
-            times_ok = all(
-                (row["start"], row["end"]) in time_filters[c]
-                for _, row in grp.iterrows()
-            )
-            if not (days_ok and times_ok):
-                bad_secs.add(sid)
-        mask &= ~((df.course_code == c) & df.section_id.isin(bad_secs))
-    filtered_df = df[mask]
 
     # — Optional: Teacher filters —
     teacher_filters = {}
     with st.expander("Optional: filter teachers per course"):
         for c in chosen:
-            tlist = sorted(
-                filtered_df[filtered_df.course_code == c]["teacher"]
-                .dropna().astype(str).unique()
-            )
+            tlist = sorted(df[df.course_code == c]["teacher"].dropna().astype(str).unique())
             sel = st.multiselect(
                 f"Allowed teachers for {c} (leave empty = all)",
-                tlist,
-                default=tlist,
-                key=f"teacher_filter_{c}"
+                tlist, default=tlist, key=f"teacher_filter_{c}"
             )
             teacher_filters[c] = set(sel) if sel else set(tlist)
 
     # — Apply teacher filters —
-    mask = pd.Series(False, index=filtered_df.index)
+    mask = pd.Series(False, index=df.index)
     for c in chosen:
         mask |= (
-            (filtered_df.course_code == c) &
-            (filtered_df.teacher.isna() |
-             filtered_df.teacher.isin(teacher_filters[c]))
+            (df.course_code == c) &
+            (df.teacher.isna() | df.teacher.isin(teacher_filters[c]))
         )
-    use_df = filtered_df[mask]
+    use_df = df[mask]
 
     # — Section manager —
     st.subheader("🔧 Manage Sections")
@@ -530,10 +498,7 @@ How to use:
     for course in chosen:
         secs = available.get(course, [])
         picked = st.multiselect(
-            f"{course}: pick sections",
-            secs,
-            default=secs,
-            key=f"section_mgr_{course}"
+            f"{course}: pick sections", secs, default=secs, key=f"section_mgr_{course}"
         )
         section_selection[course] = set(picked)
     mask2 = pd.Series(False, index=use_df.index)
@@ -546,66 +511,64 @@ How to use:
 
     # — Lab linker per lecture‑section (by UMS) —
     st.subheader("🔗 Attach labs to each lecture section (via UMS)")
-
     lab_df = df[df["course_name"].str.contains("lab", case=False, na=False)]
-    labs_by_ums = (
-        lab_df.groupby("ums")["section_id"]
-        .unique().apply(list)
-        .to_dict()
-    )
-
+    labs_by_ums = lab_df.groupby("ums")["section_id"].apply(list).to_dict()
     if "lab_links" not in st.session_state:
         st.session_state.lab_links = {}
-
     with st.expander("Pick which labs go with each lecture section"):
         for course, secs in section_selection.items():
             for lecture_sec in secs:
-                # pull only labs sharing that UMS
-                lecture_ums = use_df.loc[use_df.section_id == lecture_sec, "ums"]
-                if lecture_ums.empty:
-                    continue
-                options = labs_by_ums.get(lecture_ums.iat[0], [])
-                default = st.session_state.lab_links.get(lecture_sec, options)
+                lecture_ums = df.loc[df.section_id == lecture_sec, "ums"]
+                options     = labs_by_ums.get(lecture_ums.iat[0], []) if not lecture_ums.empty else []
+                default     = st.session_state.lab_links.get(lecture_sec, [])
                 picked = st.multiselect(
                     f"Labs for {course} [{lecture_sec}]:",
                     options=options,
                     default=default,
-                    key=f"lablink_{lecture_sec}",
-                    help="Only labs with the same UMS will appear here."
+                    key=f"lablink_{lecture_sec}"
                 )
                 st.session_state.lab_links[lecture_sec] = picked
 
-    # merge the picked labs into use_df under the same lecture section
+    # — **Merge** the selected labs into use_df by re‑using the lecture's section_id —
     extra = []
     for lecture_sec, lab_sids in st.session_state.lab_links.items():
+        # skip if no labs picked for this section
         if not lab_sids:
             continue
 
-        lecture_rows = use_df[use_df.section_id == lecture_sec]
-        if lecture_rows.empty:
-            continue  # nothing to attach to!
+        # look up that lecture's record, skip if missing
+        section_rows = use_df[use_df.section_id == lecture_sec]
+        if section_rows.empty:
+            st.warning(f"Skipping labs for section {lecture_sec!r}: no matching lecture found.")
+            continue
+        lec = section_rows.iloc[0]
 
-        parent_course = lecture_rows["course_code"].iat[0]
-        labs = df[df["section_id"].isin(lab_sids)].copy()
-        labs["course_code"] = parent_course
-        labs["section_id"]  = lecture_sec
-        extra.append(labs)
+        for lab_sid in lab_sids:
+            lab_rows = df[df.section_id == lab_sid].copy()
+            # **key step**: give lab the same section_id, course_code & section as lecture
+            lab_rows["section_id"]  = lecture_sec
+            lab_rows["course_code"] = lec["course_code"]
+            lab_rows["section"]     = lec["section"]
+            extra.append(lab_rows)
 
     if extra:
         use_df = pd.concat([use_df, pd.concat(extra, ignore_index=True)], ignore_index=True)
 
-        # 4) generate
-        max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
-        with st.spinner("Computing all clash‑free schedules…"):
-            schedules = compute_schedules(sched_df)
-        st.success(f"Found {len(schedules)} clash‑free schedules.")
+    # — Build & generate schedules —
+    groups = build_course_groups(use_df)
+    schedules = generate_all_schedules(groups)
 
-        for idx, sched in enumerate(schedules[:max_show], 1):
-            st.markdown(f"### Schedule #{idx}")
-            render_weekly_grid(sched)
+    # — Display all weekly grids —
+    max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
+    st.success(f"Found {len(schedules)} clash-free schedules.")
+    for idx, sched in enumerate(schedules[:max_show], 1):
+        st.markdown(f"### Schedule #{idx}")
+        render_weekly_grid(sched)
 
-        if len(schedules) > max_show:
-            st.info(f"Showing first {max_show} only.")
+    if len(schedules) > max_show:
+        st.info(f"Showing first {max_show} only.")
+
+
 
 
     # # ---------- Generate ----------
