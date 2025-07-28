@@ -168,8 +168,8 @@ def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
       - carry the last seen time forward,
       - carry the last non-empty block forward for each day-pair block.
     """
-    ROW_START = 7          # 0-based (row 8)
-    ROW_END   = 384        # 0-based (row 385)
+    ROW_START = 7
+    ROW_END   = 384
     TIME_COL  = 0
 
     BLOCKS = [
@@ -181,96 +181,84 @@ def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
     tidy_rows = []
 
     def emit_rows(block_vals, daypair, start_t, end_t):
-        if not block_vals:
-            return
-        # Are all 5 cols blank?
-        if all(pd.isna(x) or (isinstance(x, str) and x.strip() == "") for x in block_vals):
+        # skip fully blank blocks
+        if not block_vals or all(pd.isna(x) or (isinstance(x, str) and not x.strip()) for x in block_vals):
             return
 
-        course_name_raw = str(block_vals[0]).strip() if block_vals[0] else ""
-        class_prog      = str(block_vals[1]).strip() if block_vals[1] else ""
-        room            = str(block_vals[2]).strip() if block_vals[2] else ""
-        ums             = str(block_vals[3]).strip() if block_vals[3] else ""
-        teacher         = str(block_vals[4]).strip() if block_vals[4] else ""
+        course_name_raw = str(block_vals[0] or "").strip()
+        class_prog      = str(block_vals[1] or "").strip()
+        room            = str(block_vals[2] or "").strip()
+        ums             = str(block_vals[3] or "").strip()
+        teacher         = str(block_vals[4] or "").strip()
 
         course_name_clean = normalize_course_name(course_name_raw)
-        course_code = course_name_clean
+        course_code       = course_name_clean
 
-        sec_guess = re.findall(r"(sec[^,\s]*)", course_name_raw, flags=re.IGNORECASE)
-        if not sec_guess:
-            sec_guess = re.findall(r"(sec[^,\s]*)", class_prog, flags=re.IGNORECASE)
+        # Optional textual section guess
+        sec_guess = re.findall(r"(sec[^,\s]*)", course_name_raw, flags=re.IGNORECASE) \
+                or re.findall(r"(sec[^,\s]*)", class_prog, flags=re.IGNORECASE)
         section = sec_guess[0] if sec_guess else None
 
-        time_key = ""
-        if isinstance(start_t, time) and isinstance(end_t, time):
-            time_key = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
-        teacher_key = teacher if teacher else "Unknown"
+        # Rebuild fallback key if ums is missing
+        days_key    = "/".join(daypair)
+        time_key    = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}" \
+                          if isinstance(start_t, time) and isinstance(end_t, time) else ""
+        teacher_key = teacher or "Unknown"
+        fallback_id = f"{course_code}|{teacher_key}|{days_key}|{time_key}"
+
+        # Use UMS ClassNo if available, else fallback
+        section_id = ums if ums else fallback_id
 
         for d in daypair:
-            # Build a single days_key for the block:
-            days_key = "/".join(daypair)   # e.g. "Mon/Wed" or "Tue/Thu"
-            time_key = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}" if start_t and end_t else ""
-            teacher_key = teacher or "Unknown"
-            section_id = f"{course_code}|{teacher_key}|{days_key}|{time_key}"
-
-            tidy_rows.append(
-                dict(
-                    course_code=course_code,
-                    course_name=course_name_clean,
-                    section=section,
-                    section_id=section_id,
-                    class_prog=class_prog,
-                    ums=ums,
-                    teacher=teacher,
-                    day=d,
-                    start=start_t,
-                    end=end_t,
-                    room=room,
-                )
-            )
+            tidy_rows.append(dict(
+                course_code=course_code,
+                course_name=course_name_clean,
+                section=section,
+                section_id=section_id,
+                class_prog=class_prog,
+                ums=ums,
+                teacher=teacher,
+                day=d,
+                start=start_t,
+                end=end_t,
+                room=room,
+            ))
 
     current_start, current_end = None, None
-    # keep last non-empty block values for each of the 3 blocks
     last_blocks = [None, None, None]
 
     for i in range(ROW_START, min(ROW_END + 1, len(df))):
-        # Update time if present; otherwise keep previous (carry forward)
+        # carry‑forward time
         time_str = df.iat[i, TIME_COL] if TIME_COL < df.shape[1] else None
         if isinstance(time_str, str) and time_str.strip():
             st_, et_ = parse_time_range(time_str)
             if st_ and et_:
                 current_start, current_end = st_, et_
 
-        # Only skip rows until we find the first valid time
+        # until we have a valid time, just cache non‑blank blocks
         if not (current_start and current_end):
-            # But still cache any non-empty blocks so they can be used once time appears
             for bi, block in enumerate(BLOCKS):
                 if max(block["cols"]) >= df.shape[1]:
                     continue
                 vals = [df.iat[i, c] for c in block["cols"]]
-                if not all(pd.isna(x) or str(x).strip() == "" for x in vals):
+                if not all(pd.isna(x) or str(x).strip()=="" for x in vals):
                     last_blocks[bi] = vals
             continue
 
-        # We have a valid time -> emit for each block, using last non-empty if this row's is blank
+        # emit each block, carrying forward prior non‑empty if blank
         for bi, block in enumerate(BLOCKS):
             if max(block["cols"]) >= df.shape[1]:
                 continue
             vals = [df.iat[i, c] for c in block["cols"]]
-            if all(pd.isna(x) or str(x).strip() == "" for x in vals):
+            if all(pd.isna(x) or str(x).strip()=="" for x in vals):
                 vals = last_blocks[bi]
             else:
                 last_blocks[bi] = vals
             if vals is not None:
                 emit_rows(vals, block["days"], current_start, current_end)
 
-    out = pd.DataFrame(tidy_rows)
+    return pd.DataFrame(tidy_rows)
 
-    # DEBUG (uncomment to verify you're now seeing Ahsan Jawed)
-    # st.write("Teachers found:", sorted(out['teacher'].dropna().unique()))
-    # st.write(out[out['teacher'].str.contains("ahsan", case=False, na=False)])
-
-    return out
 
 # ------------------------------
 # Clash detection
