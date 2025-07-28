@@ -9,6 +9,16 @@ import plotly.express as px
 import pandas as pd
 import streamlit as st
 
+# —————————————————————————————————————————
+# XLSX export, read sheets 0 & 1
+# —————————————————————————————————————————
+# (just copy‑paste & change the URL for each new semester)
+BATCH_XLSX = {
+    "Fall 2025": "https://docs.google.com/spreadsheets/d/1Bqg8jvcxhZ7xUEF5hBRwl8ZqxxxxtjqQnuy3HirL6fA/export?format=xlsx",
+    # "Spring 2026": "",
+    # … add more batches here as needed …
+}
+
 @st.cache_data(show_spinner=False)
 def compute_schedules(use_df):
     """
@@ -17,6 +27,16 @@ def compute_schedules(use_df):
     """
     groups = build_course_groups(use_df)
     return generate_all_schedules(groups)
+
+@st.cache_data(show_spinner=False)
+def load_schedule(url: str) -> pd.DataFrame:
+    wb = pd.read_excel(url, sheet_name=[0,1], header=None)
+    df_main = normalize_from_iba_like_layout(wb[0])
+    df_main["campus"] = "Main"
+    df_city = normalize_from_iba_like_layout(wb[1])
+    df_city["campus"] = "City"
+    df = pd.concat([df_main, df_city], ignore_index=True)
+    return df.dropna(subset=["start","end","day"])
 
 # ==============================
 # --------- CONFIG -------------
@@ -364,52 +384,37 @@ def generate_all_schedules(course_groups: Dict[str, List[List[dict]]]) -> List[L
 def main():
     st.title("IAT Timetable Generator")
 
-    st.markdown(
-        """
+    st.markdown("""
 How to use:
-1. Make your Google Sheet (tab) public or “anyone with the link can view.”
-2. Paste the CSV export URL(s):  
-   `https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv&gid=<GID>`  
-   (one per worksheet/tab) below.
-3. Pick layout type:
-   - IBA‑like (Mon/Wed | Tue/Thu | Fri/Sat blocks per row)
-   - Already normalized (columns: course_code, section/section_id, day, start, end, …)
-4. Select courses (and optionally teachers, days, times) and generate all clash‑free schedules.
-        """
+1. Make your Google Sheet (tab) public…
+2. Paste each CSV export URL below.
+3. We assume an IBA‑style layout (Mon/Wed | Tue/Thu | Fri/Sat per row).
+4. Select courses, attach labs, and generate clash‑free schedules.
+    """)
+
+    # ─── Enrollment batch selector ───
+    selected_batch = st.selectbox(
+        "Select enrollment batch",
+        options=list(BATCH_XLSX.keys()),
+        index=0
+    )
+    # grab the correct XLSX URL for that batch
+    XLSX_URL = BATCH_XLSX[selected_batch]
+
+    # ─── Campus slider + load Main (sheet 0) & City (sheet 1) from XLSX ───
+    campuses = ["Main", "City", "Both"]
+    selected_campus = st.select_slider(
+        "Show campus",
+        options=campuses,
+        value="Both",
     )
 
-    # — Input CSV URLs —
-    csv_urls = [u.strip() for u in st.text_area(
-        "CSV export URL(s) – one per line",
-        placeholder="Paste one or more CSV export links here…",
-        key="csv_urls_input"
-    ).splitlines() if u.strip()]
-    if not csv_urls:
-        st.info("Paste at least one CSV URL to continue.")
-        st.stop()
+    with st.spinner("Loading & normalizing…"):
+        df = load_schedule(XLSX_URL)
 
-    # — Layout choice —
-    layout_type = st.radio(
-        "Sheet layout",
-        ["IBA-like", "Already normalized"],
-        index=0,
-        key="layout_type"
-    )
-
-    # — Load & normalize —
-    with st.spinner("Loading & normalizing …"):
-        tidy_all = []
-        for url in csv_urls:
-            raw = pd.read_csv(url, header=None if layout_type.startswith("IBA") else 0)
-            if layout_type.startswith("IBA"):
-                tidy = normalize_from_iba_like_layout(raw)
-            else:
-                tidy = normalize_already_tidy(raw)
-            tidy_all.append(tidy)
-        df = pd.concat(tidy_all, ignore_index=True)
-        df = df.dropna(subset=["start", "end", "day"])
-        df["start"] = df["start"].apply(lambda t: t if isinstance(t, time) else t)
-        df["end"]   = df["end"].apply(lambda t: t if isinstance(t, time) else t)
+    # filter down if they chose just Main or just City
+    if selected_campus in ("Main", "City"):
+        df = df[df["campus"] == selected_campus]
 
     st.subheader("Normalized data (preview)")
     st.dataframe(df.head(1000))
