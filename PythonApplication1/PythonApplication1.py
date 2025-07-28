@@ -544,63 +544,86 @@ How to use:
         )
     use_df = use_df[mask2]
 
-   # — Lab linker per lecture‐section —
+    # — Lab linker per lecture‐section —
     st.subheader("🔗 Attach any section (e.g. lab) to a lecture section")
 
     # a) Build a mapping: section_id → human‑readable label
-    days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-    section_labels: Dict[str, str] = {}
+    days_order = ["Mon","Tue","Wed","Thu","Fri","Sat"]
+    section_labels: Dict[str,str] = {}
     for sid, grp in df.groupby("section_id"):
         row0    = grp.iloc[0]
         code    = row0["course_code"]
         teacher = row0["teacher"] or "Unknown"
-        days = sorted(grp["day"].unique(), key=lambda d: days_order.index(d))
-        times = sorted({
+        days    = sorted(grp["day"].unique(), key=lambda d: days_order.index(d))
+        times   = sorted({
             f"{r['start'].strftime('%H:%M')}-{r['end'].strftime('%H:%M')}"
-            for _, r in grp.iterrows() if hasattr(r["start"], "hour")
+            for _, r in grp.iterrows()
+            if hasattr(r["start"], "hour")
         })
-        label = f"{code} | Days: {'/'.join(days)} | Times: {'/'.join(times)} | {teacher}"
-        section_labels[sid] = label
+        section_labels[sid] = f"{code} | Days: {'/'.join(days)} | Times: {'/'.join(times)} | {teacher}"
 
     all_sids = list(section_labels.keys())
 
-    # b) Initialize session‐state mapping: lecture_section_id ➔ [linked_section_ids]
+    # b) Init session state
     if "section_links" not in st.session_state:
-        st.session_state.section_links = {}
+        st.session_state.section_links = {}  # lecture_section_id -> [lab_section_ids...]
 
-    # c) UI: one multiselect *per* lecture section
+    # c) One multiselect per lecture‐section
     with st.expander("Link additional sections (labs, tutorials, etc.)"):
         for course, secs in section_selection.items():
             for sec in secs:
                 default = st.session_state.section_links.get(sec, [])
-                picked = st.multiselect(
+                picked  = st.multiselect(
                     f"Attach sections to {course} [{sec}]:",
                     options=all_sids,
                     default=default,
                     key=f"section_link_{sec}",
                     format_func=lambda sid: section_labels[sid],
-                    help="Pick any section (lab/tutorial) you want to include with this lecture section."
+                    help="Pick any section (lab/tutorial) to include with this lecture section."
                 )
                 st.session_state.section_links[sec] = picked
-
-    # d) Merge in exactly the rows for each linked section_id
+    # --- d) Merge labs into their lecture section ---
     extra_rows = []
-    for lecture_sec, linked_sids in st.session_state.section_links.items():
-        if linked_sids:
-            extra_rows.extend(
-                df[df["section_id"].isin(linked_sids)]
-                .to_dict("records")
-            )
+
+    for lecture_sec, lab_sids in st.session_state.section_links.items():
+        # find what course_code that lecture uses:
+        parent_course = use_df.loc[
+             use_df.section_id == lecture_sec, "course_code"
+        ].iat[0]
+
+        for lab_sid in lab_sids:
+            lab_rows = df[df["section_id"] == lab_sid].copy()
+
+            # reassign them into the lecture’s bucket:
+            lab_rows["course_code"] = parent_course
+            lab_rows["section_id"]  = lecture_sec
+
+            extra_rows.extend(lab_rows.to_dict("records"))
 
     if extra_rows:
         use_df = pd.concat([use_df, pd.DataFrame(extra_rows)], ignore_index=True)
 
-
-
     # — Generate & display —
+    # — After you’ve built `use_df` and merged in exactly
+    #    the rows for each linked section_id… —
+
+    # 1) keep only the lectures the user picked
+    lect_df = use_df[use_df.course_code.isin(chosen)]
+
+    # 2) gather all the lab‐codes they actually linked
+    all_lab_sids = sum(st.session_state.section_links.values(), [])
+    lab_codes = df[df.section_id.isin(all_lab_sids)]["course_code"].unique().tolist()
+
+    # 3) now build the final scheduling pool
+    sched_df = pd.concat(
+        [lect_df, df[df.course_code.isin(lab_codes)]],
+        ignore_index=True
+    )
+
+    # 4) generate
     max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
     with st.spinner("Computing all clash‑free schedules…"):
-        schedules = compute_schedules(use_df)
+        schedules = compute_schedules(sched_df)
     st.success(f"Found {len(schedules)} clash‑free schedules.")
 
     for idx, sched in enumerate(schedules[:max_show], 1):
@@ -609,6 +632,7 @@ How to use:
 
     if len(schedules) > max_show:
         st.info(f"Showing first {max_show} only.")
+
 
     # # ---------- Generate ----------
     # max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
