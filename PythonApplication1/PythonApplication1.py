@@ -13,11 +13,11 @@ import streamlit as st
 # XLSX export, read sheets 0 & 1
 # —————————————————————————————————————————
 # (just copy‑paste & change the URL for each new semester)
-BATCH_XLSX = {
-    #"Fall 2025": "",
-    # "Spring 2026": "",
-    # … add more batches here as needed …
-}
+# BATCH_XLSX = {
+#     #"Fall 2025": "",
+#     # "Spring 2026": "",
+#     # … add more batches here as needed …
+# }
 
 @st.cache_data(show_spinner=False)
 def compute_schedules(use_df):
@@ -31,9 +31,9 @@ def compute_schedules(use_df):
 @st.cache_data(show_spinner=False)
 def load_schedule(url: str) -> pd.DataFrame:
     wb = pd.read_excel(url, sheet_name=[0,1], header=None)
-    df_main = normalize_from_iba_like_layout(wb[0])
+    df_main = normalize(wb[0])
     df_main["campus"] = "Main"
-    df_city = normalize_from_iba_like_layout(wb[1])
+    df_city = normalize(wb[1])
     df_city["campus"] = "City"
     df = pd.concat([df_main, df_city], ignore_index=True)
     return df.dropna(subset=["start","end","day"])
@@ -41,11 +41,6 @@ def load_schedule(url: str) -> pd.DataFrame:
 # ==============================
 # --------- CONFIG -------------
 # ==============================
-# If your sheet is PUBLIC, you can read each worksheet/tab with:
-# https://docs.google.com/spreadsheets/d/<SHEET_ID>/export?format=csv&gid=<GID>
-#
-# Paste those CSV URLs in the textbox (one per line) and choose "IBA-like layout"
-# OR provide a single "already-normalized" CSV and choose "Normalized layout".
 
 def fuzzy_deduplicate(names, cutoff=85):
     unique = []
@@ -60,7 +55,7 @@ def fuzzy_deduplicate(names, cutoff=85):
     return mapping
 
 def render_weekly_grid(sched: List[dict], lab_map: Dict[str, List[Tuple[str, time, time]]] = None):
-    # 1) Define the fixed IBA slots
+    # 1) Define the fixed slots
     time_labels = [
         "08:30-09:45", "10:00-11:15", "11:30-12:45",
         "13:00-14:15", "14:30-15:45", "16:00-17:15",
@@ -210,7 +205,7 @@ def parse_time_range(s: str) -> Tuple[time, time]:
 # time | (Mon/Wed: Course, Class&Program, Room, UMS, Teacher)
 #      | (Tue/Thu: Course, Class&Program, Room, UMS, Teacher)
 #      | (Fri/Sat: Course, Class&Program, Room, UMS, Teacher)
-def normalize_from_iba_like_layout(df: pd.DataFrame) -> pd.DataFrame:
+def normalize(df: pd.DataFrame) -> pd.DataFrame:
     """
     Google Sheet layout:
       time | [Mon/Wed 5 cols] | [Tue/Thu 5 cols] | [Fri/Sat 5 cols]
@@ -400,6 +395,7 @@ This website is not affiliated with IBA in any way, it is just a tool to help st
 Also expect tons of bugs
     """)
 
+    # Dropdown Menu
     # # ─── Enrollment batch selector ───
     # selected_batch = st.selectbox(
     #     "Select enrollment batch",
@@ -420,7 +416,8 @@ Also expect tons of bugs
     # with st.spinner("Loading & normalizing…"):
     #     df = load_schedule(XLSX_URL)
 
-        # ← NEW: ask the user for their public Google Sheets share link
+    # Paste Link
+    # ← NEW: ask the user for their public Google Sheets share link
     sheet_url = st.text_input(
         "Paste your Google Sheet URL (e.g. https://docs.google.com/spreadsheets/d/<ID>/edit?usp=sharing)"
     )
