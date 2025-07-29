@@ -71,11 +71,20 @@ def render_weekly_grid(sched: List[dict], lab_map: Dict[str, List[Tuple[str, tim
     for _, row in df_sched.iterrows():
         slot = f"{row['start'].strftime('%H:%M')}-{row['end'].strftime('%H:%M')}"
         d    = row["day"]
+
+        # Detect labs by course_name and set title + flag
+        if "lab" in str(row.get("course_name", "")).lower():
+            title       = row["course_name"]
+            linked_flag = " (linked)"
+        else:
+            title       = row["course_code"]
+            linked_flag = ""
+
         cell = (
-            f"{row['course_code']}<br>"
+            f"{title}{linked_flag}<br>"
             f"<small>UMS {row['ucode']} | {row['teacher']} | Room {row['room']}</small>"
         )
-
+        grid[slot][d] = cell
         
         # if this section has any labs linked, append them when they land here:
         # sid = row["section_id"]
@@ -379,7 +388,16 @@ def generate_all_schedules(course_groups: Dict[str, List[List[dict]]]) -> List[L
 def main():
     st.title("IAT Timetable Generator")
 
+    st.markdown(""" ## Disclaimer:
+    <span style="font-weight:800">
+    This website is not affiliated with any organization. It is built by students for students. 
+    The schedules produced by this software may be prone to errors and not reflect final schedules. 
+    Please double check from the primary source.
+    </span></span><br><br>
+    """, unsafe_allow_html=True)
+
     st.markdown("""
+
 How to use:
 1. Best for desktop use 
 2. We assume a layout (Mon/Wed | Tue/Thu | Fri/Sat per row) with timing in the first column.
@@ -391,8 +409,6 @@ Since timetables are highly inconsistent (and we don't want to clean it), you wi
 You can manually link labs with appropriate sections of a course. However, if unique codes are available this will be done automatically.
 
 This website makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
-
-Disclaimer: This website is not affiliated with any organization. It is built by students for students.
 
 Also expect tons of bugs
     """)
@@ -604,7 +620,13 @@ Also expect tons of bugs
     with st.expander("Pick which labs go with each lecture section"):
         for course, secs in section_selection.items():
             for lecture_sec in secs:
-                default = st.session_state.lab_links.get(lecture_sec, [])
+                # default = st.session_state.lab_links.get(lecture_sec, [])
+                # only keep defaults that still exist in the options
+                default = [
+                    sid
+                    for sid in st.session_state.lab_links.get(lecture_sec, [])
+                    if sid in all_lab_sids
+                ]
                 picked = st.multiselect(
                     f"Labs for {course} [{lecture_sec}]:",
                     options=all_lab_sids,   # all labs, so you can always add any
@@ -638,6 +660,69 @@ Also expect tons of bugs
 
         if extra:
             use_df = pd.concat([use_df, pd.concat(extra, ignore_index=True)], ignore_index=True)
+    
+    # Beta test disclaimer
+    st.markdown("The following are under testing, set them to default if experiencing issues")
+    # ─── Section‑level Day & Time filters ──────────────────────────────
+    # 1) Map each row’s actual day to its IBA group
+    DAY_TO_GROUP = {
+        "Mon": "Mon/Wed", "Wed": "Mon/Wed",
+        "Tue": "Tue/Thu", "Thu": "Tue/Thu",
+        "Fri": "Fri/Sat", "Sat": "Fri/Sat"
+    }
+    use_df["row_group"] = use_df["day"].map(DAY_TO_GROUP)
+
+    # 2) Let the user pick which day‑groups to keep
+    DAY_GROUPS = sorted(use_df["row_group"].dropna().unique())
+    selected_groups = st.multiselect(
+        "📅 Filter by day group(s)",
+        options=DAY_GROUPS,
+        default=DAY_GROUPS
+    )
+
+    # 3) Let the user pick a time‑slot window
+    TIME_SLOTS = [
+        "08:30-09:45", "10:00-11:15", "11:30-12:45",
+        "13:00-14:15", "14:30-15:45", "16:00-17:15",
+        "17:30-18:45"
+    ]
+    start_slot, end_slot = st.select_slider(
+        "⏰ Filter by time‑slot range",
+        options=TIME_SLOTS,
+        value=(TIME_SLOTS[0], TIME_SLOTS[-1])
+    )
+
+    s_start = datetime.strptime(start_slot.split("-")[0], "%H:%M").time()
+    e_end   = datetime.strptime(end_slot.split("-")[1], "%H:%M").time()
+
+    # 4) Finally: drop any section (lecture + all its labs) if **any** of its rows
+    #    fall outside the chosen day‑groups or time range
+    valid_sids = [
+        sid for sid, grp in use_df.groupby("section_id")
+        if grp["row_group"].isin(selected_groups).all()
+        and (grp["start"] >= s_start).all()
+        and (grp["end"]   <= e_end).all()
+    ]
+    use_df = use_df[use_df["section_id"].isin(valid_sids)]
+
+    # ─── Sanity check: did any course lose all its sections? - Present only due to previous two day and time filters ────────────────────
+    missing = [
+        c for c in st.session_state.pick_courses
+        if c not in use_df["course_code"].unique()
+    ]
+    if missing:
+        max_show = st.number_input("Max schedules to show", 1, 2000, value=50, key="max_show")
+        st.success(f"Found 0 clash-free schedules.")
+        st.warning(
+            f"No sections left for course(s): {', '.join(missing)} after applying day/time filters. "
+            "Either loosen your filters or revisit your merge/link settings."
+        )
+        return  # stop here, no partial schedules
+
+    # — Build & generate schedules —
+    groups    = build_course_groups(use_df)
+    schedules = generate_all_schedules(groups)
+
 
     # — Build & generate schedules —
     groups = build_course_groups(use_df)
