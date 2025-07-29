@@ -388,7 +388,7 @@ How to use:
 ## Merge: 
 Since timetables are highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example Calculus 1 and Cal 1; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
 ## Linking:
-You can manually link labs with appropriate sections of a course. However, if ucode codes are available this will be done automatically.
+You can manually link labs with appropriate sections of a course. However, if unique codes are available this will be done automatically.
 
 This website makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
 
