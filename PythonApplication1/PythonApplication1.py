@@ -386,10 +386,18 @@ def main():
 
     st.markdown("""
 How to use:
-1. Make your Google Sheet (tab) public…
-2. Paste each CSV export URL below.
-3. We assume an IBA‑style layout (Mon/Wed | Tue/Thu | Fri/Sat per row).
-4. Select courses, attach labs, and generate clash‑free schedules.
+1. Best for desktop use 
+2. We assume an IBA‑style layout (Mon/Wed | Tue/Thu | Fri/Sat per row).
+3. Select courses, attach labs, and generate all possible clash‑free schedules (We are working to try and incorporate your preferences as well).
+
+## Merge: 
+Since IBA's public timetable is highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example one Database course has a section with a typo 'Datbase Systems'; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
+## Linking:
+You can manually link labs with appropriate sections of a course. However, if UMS codes are available this will be done automatically.
+
+This website is not affiliated with IBA in any way, it is just a tool to help students generate their schedules. It makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
+
+Also expect tons of bugs
     """)
 
     # ─── Enrollment batch selector ───
@@ -514,50 +522,98 @@ How to use:
         )
     use_df = use_df[mask2]
 
-    # — Lab linker per lecture‑section (by UMS) —
+    # — Lab linker per lecture‑section (by UMS substring) —
     st.subheader("🔗 Attach labs to each lecture section (via UMS)")
-    lab_df = df[df["course_name"].str.contains("lab", case=False, na=False)]
-    labs_by_ums = lab_df.groupby("ums")["section_id"].apply(list).to_dict()
+
+    # 1) gather ALL lab‑rows (for manual picking)
+    lab_df_all   = df[df["course_name"].str.contains("lab", case=False, na=False)]
+    all_lab_sids = sorted(lab_df_all["section_id"].unique())
+
+    # 2) build UMS→labs map for auto‑defaults (only labs with a real UMS)
+    lab_df_valid = lab_df_all[
+        lab_df_all["ums"].notna() &
+        lab_df_all["ums"].astype(str).str.strip().ne("")
+    ]
+    labs_by_ums  = lab_df_valid.groupby("ums")["section_id"].apply(list).to_dict()
+
+    # stuff that does not currently have a ums code should not be considered
+    labs_by_ums.pop("nan", None)
+
+    # ensure session state exists
     if "lab_links" not in st.session_state:
         st.session_state.lab_links = {}
+
+    # 3) auto‑populate defaults **only** when lecture_ums is present and non‑blank
+    for course, secs in section_selection.items():
+        for lecture_sec in secs:
+            if lecture_sec in st.session_state.lab_links:
+                continue
+
+            ums_series = df.loc[df.section_id == lecture_sec, "ums"]
+            if ums_series.empty:
+                # no UMS for this lecture → skip auto‑link
+                continue
+
+            lecture_ums = ums_series.iat[0]
+            # skip if UMS is NaN or blank
+            lu = str(lecture_ums).strip().lower()
+            if pd.isna(lecture_ums) or str(lecture_ums).strip() == "" or lu == "" or lu == "nan":
+                continue
+
+            lecture_ums = str(lecture_ums).strip()
+            # find any lab_ums that contain this substring
+            matches = []
+            for lab_ums, sids in labs_by_ums.items():
+                if lecture_ums in str(lab_ums):
+                    matches.extend(sids)
+
+            # dedupe while preserving order
+            default_list = []
+            for sid in matches:
+                if sid not in default_list:
+                    default_list.append(sid)
+
+            if default_list:
+                st.session_state.lab_links[lecture_sec] = default_list
+
+    # 4) render the multiselect with ALL labs as options, but substring‑matched defaults
     with st.expander("Pick which labs go with each lecture section"):
         for course, secs in section_selection.items():
             for lecture_sec in secs:
-                lecture_ums = df.loc[df.section_id == lecture_sec, "ums"]
-                options     = labs_by_ums.get(lecture_ums.iat[0], []) if not lecture_ums.empty else []
-                default     = st.session_state.lab_links.get(lecture_sec, [])
+                default = st.session_state.lab_links.get(lecture_sec, [])
                 picked = st.multiselect(
                     f"Labs for {course} [{lecture_sec}]:",
-                    options=options,
-                    default=default,
+                    options=all_lab_sids,   # all labs, so you can always add any
+                    default=default,        # only UMS‑matched ones are pre‑checked
                     key=f"lablink_{lecture_sec}"
                 )
                 st.session_state.lab_links[lecture_sec] = picked
 
-    # — **Merge** the selected labs into use_df by re‑using the lecture's section_id —
-    extra = []
-    for lecture_sec, lab_sids in st.session_state.lab_links.items():
-        # skip if no labs picked for this section
-        if not lab_sids:
-            continue
 
-        # look up that lecture's record, skip if missing
-        section_rows = use_df[use_df.section_id == lecture_sec]
-        if section_rows.empty:
-            st.warning(f"Skipping labs for section {lecture_sec!r}: no matching lecture found.")
-            continue
-        lec = section_rows.iloc[0]
+        # — **Merge** the selected labs into use_df by re‑using the lecture's section_id —
+        extra = []
+        for lecture_sec, lab_sids in st.session_state.lab_links.items():
+            # skip if no labs picked for this section
+            if not lab_sids:
+                continue
 
-        for lab_sid in lab_sids:
-            lab_rows = df[df.section_id == lab_sid].copy()
-            # **key step**: give lab the same section_id, course_code & section as lecture
-            lab_rows["section_id"]  = lecture_sec
-            lab_rows["course_code"] = lec["course_code"]
-            lab_rows["section"]     = lec["section"]
-            extra.append(lab_rows)
+            # look up that lecture's record, skip if missing
+            section_rows = use_df[use_df.section_id == lecture_sec]
+            if section_rows.empty:
+                st.warning(f"Skipping labs for section {lecture_sec!r}: no matching lecture found.")
+                continue
+            lec = section_rows.iloc[0]
 
-    if extra:
-        use_df = pd.concat([use_df, pd.concat(extra, ignore_index=True)], ignore_index=True)
+            for lab_sid in lab_sids:
+                lab_rows = df[df.section_id == lab_sid].copy()
+                # **key step**: give lab the same section_id, course_code & section as lecture
+                lab_rows["section_id"]  = lecture_sec
+                lab_rows["course_code"] = lec["course_code"]
+                lab_rows["section"]     = lec["section"]
+                extra.append(lab_rows)
+
+        if extra:
+            use_df = pd.concat([use_df, pd.concat(extra, ignore_index=True)], ignore_index=True)
 
     # — Build & generate schedules —
     groups = build_course_groups(use_df)
