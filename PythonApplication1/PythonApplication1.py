@@ -392,6 +392,8 @@ You can manually link labs with appropriate sections of a course. However, if un
 
 This website makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
 
+Disclaimer: This website is not affiliated with any organization. It is built by students for students.
+
 Also expect tons of bugs
     """)
 
