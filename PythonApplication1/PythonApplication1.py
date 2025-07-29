@@ -73,7 +73,7 @@ def render_weekly_grid(sched: List[dict], lab_map: Dict[str, List[Tuple[str, tim
         d    = row["day"]
         cell = (
             f"{row['course_code']}<br>"
-            f"<small>UMS {row['ums']} | {row['teacher']} | Room {row['room']}</small>"
+            f"<small>UMS {row['ucode']} | {row['teacher']} | Room {row['room']}</small>"
         )
 
         
@@ -236,7 +236,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         course_name_raw = str(block_vals[0]).strip() if block_vals[0] else ""
         class_prog      = str(block_vals[1]).strip() if block_vals[1] else ""
         room            = str(block_vals[2]).strip() if block_vals[2] else ""
-        ums             = str(block_vals[3]).strip() if block_vals[3] else ""
+        ucode             = str(block_vals[3]).strip() if block_vals[3] else ""
         teacher         = str(block_vals[4]).strip() if block_vals[4] else ""
 
         course_name_clean = normalize_course_name(course_name_raw)
@@ -266,7 +266,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
                     section=section,
                     section_id=section_id,
                     class_prog=class_prog,
-                    ums=ums,
+                    ucode=ucode,
                     teacher=teacher,
                     day=d,
                     start=start_t,
@@ -382,15 +382,15 @@ def main():
     st.markdown("""
 How to use:
 1. Best for desktop use 
-2. We assume a layout (Mon/Wed | Tue/Thu | Fri/Sat per row) with timingd in the first column.
+2. We assume a layout (Mon/Wed | Tue/Thu | Fri/Sat per row) with timing in the first column.
 3. Select courses, attach labs, and generate all possible clash‑free schedules (We are working to try and incorporate your preferences as well).
 
 ## Merge: 
-Since timetables are highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example one Database course has a section with a typo 'Datbase Systems'; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
+Since timetables are highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example Calculus 1 and Cal 1; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
 ## Linking:
 You can manually link labs with appropriate sections of a course. However, if UMS codes are available this will be done automatically.
 
-This website is not affiliated with IBA in any way, it is just a tool to help students generate their schedules. It makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
+This website makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
 
 Also expect tons of bugs
     """)
@@ -553,12 +553,12 @@ Also expect tons of bugs
 
     # 2) build UMS→labs map for auto‑defaults (only labs with a real UMS)
     lab_df_valid = lab_df_all[
-        lab_df_all["ums"].notna() &
-        lab_df_all["ums"].astype(str).str.strip().ne("")
+        lab_df_all["ucode"].notna() &
+        lab_df_all["ucode"].astype(str).str.strip().ne("")
     ]
-    labs_by_ums  = lab_df_valid.groupby("ums")["section_id"].apply(list).to_dict()
+    labs_by_ums  = lab_df_valid.groupby("ucode")["section_id"].apply(list).to_dict()
 
-    # stuff that does not currently have a ums code should not be considered
+    # stuff that does not currently have a ucode code should not be considered
     labs_by_ums.pop("nan", None)
 
     # ensure session state exists
@@ -571,7 +571,7 @@ Also expect tons of bugs
             if lecture_sec in st.session_state.lab_links:
                 continue
 
-            ums_series = df.loc[df.section_id == lecture_sec, "ums"]
+            ums_series = df.loc[df.section_id == lecture_sec, "ucode"]
             if ums_series.empty:
                 # no UMS for this lecture → skip auto‑link
                 continue
