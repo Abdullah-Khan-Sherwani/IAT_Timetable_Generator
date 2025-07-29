@@ -202,9 +202,9 @@ def parse_time_range(s: str) -> Tuple[time, time]:
 # ------------------------------
 # Heuristic parser for your Google Sheet:
 # pattern repeated 3 times per row:
-# time | (Mon/Wed: Course, Class&Program, Room, UMS, Teacher)
-#      | (Tue/Thu: Course, Class&Program, Room, UMS, Teacher)
-#      | (Fri/Sat: Course, Class&Program, Room, UMS, Teacher)
+# time | (Mon/Wed: Course, Class&Program, Room, ucode, Teacher)
+#      | (Tue/Thu: Course, Class&Program, Room, ucode, Teacher)
+#      | (Fri/Sat: Course, Class&Program, Room, ucode, Teacher)
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
     """
     Google Sheet layout:
@@ -388,7 +388,7 @@ How to use:
 ## Merge: 
 Since timetables are highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example Calculus 1 and Cal 1; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
 ## Linking:
-You can manually link labs with appropriate sections of a course. However, if UMS codes are available this will be done automatically.
+You can manually link labs with appropriate sections of a course. However, if ucode codes are available this will be done automatically.
 
 This website makes the algorithm we used to generate our schedules available to everyone. We will work on adding a few features here and there but the code is Open Source so we encourage you to tweak and add stuff yourself. You can fork and contribute to the project using the icons up top.
 
@@ -544,14 +544,14 @@ Also expect tons of bugs
         )
     use_df = use_df[mask2]
 
-    # — Lab linker per lecture‑section (by UMS substring) —
-    st.subheader("🔗 Attach labs to each lecture section (via UMS)")
+    # — Lab linker per lecture‑section (by ucode substring) —
+    st.subheader("🔗 Attach labs to each lecture section (via ucode)")
 
     # 1) gather ALL lab‑rows (for manual picking)
     lab_df_all   = df[df["course_name"].str.contains("lab", case=False, na=False)]
     all_lab_sids = sorted(lab_df_all["section_id"].unique())
 
-    # 2) build UMS→labs map for auto‑defaults (only labs with a real UMS)
+    # 2) build ucode→labs map for auto‑defaults (only labs with a real ucode)
     lab_df_valid = lab_df_all[
         lab_df_all["ucode"].notna() &
         lab_df_all["ucode"].astype(str).str.strip().ne("")
@@ -573,11 +573,11 @@ Also expect tons of bugs
 
             ums_series = df.loc[df.section_id == lecture_sec, "ucode"]
             if ums_series.empty:
-                # no UMS for this lecture → skip auto‑link
+                # no ucode for this lecture → skip auto‑link
                 continue
 
             lecture_ums = ums_series.iat[0]
-            # skip if UMS is NaN or blank
+            # skip if ucode is NaN or blank
             lu = str(lecture_ums).strip().lower()
             if pd.isna(lecture_ums) or str(lecture_ums).strip() == "" or lu == "" or lu == "nan":
                 continue
