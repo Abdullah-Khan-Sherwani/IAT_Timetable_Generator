@@ -14,7 +14,7 @@ import streamlit as st
 # —————————————————————————————————————————
 # (just copy‑paste & change the URL for each new semester)
 BATCH_XLSX = {
-    "Fall 2025": "https://docs.google.com/spreadsheets/d/1Bqg8jvcxhZ7xUEF5hBRwl8ZqxxxxtjqQnuy3HirL6fA/export?format=xlsx",
+    #"Fall 2025": "",
     # "Spring 2026": "",
     # … add more batches here as needed …
 }
@@ -387,11 +387,11 @@ def main():
     st.markdown("""
 How to use:
 1. Best for desktop use 
-2. We assume an IBA‑style layout (Mon/Wed | Tue/Thu | Fri/Sat per row).
+2. We assume a layout (Mon/Wed | Tue/Thu | Fri/Sat per row) with timingd in the first column.
 3. Select courses, attach labs, and generate all possible clash‑free schedules (We are working to try and incorporate your preferences as well).
 
 ## Merge: 
-Since IBA's public timetable is highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example one Database course has a section with a typo 'Datbase Systems'; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
+Since timetables are highly inconsistent (and we don't want to clean it), you will have to merge duplicate course entries here. For example one Database course has a section with a typo 'Datbase Systems'; you will have to add both of these courses in the merge window together and click merge (canonical name will default to the first course's name). This will signal to us to deal with both of these as the same course.
 ## Linking:
 You can manually link labs with appropriate sections of a course. However, if UMS codes are available this will be done automatically.
 
@@ -400,22 +400,47 @@ This website is not affiliated with IBA in any way, it is just a tool to help st
 Also expect tons of bugs
     """)
 
-    # ─── Enrollment batch selector ───
-    selected_batch = st.selectbox(
-        "Select enrollment batch",
-        options=list(BATCH_XLSX.keys()),
-        index=0
-    )
-    # grab the correct XLSX URL for that batch
-    XLSX_URL = BATCH_XLSX[selected_batch]
+    # # ─── Enrollment batch selector ───
+    # selected_batch = st.selectbox(
+    #     "Select enrollment batch",
+    #     options=list(BATCH_XLSX.keys()),
+    #     index=0
+    # )
+    # # grab the correct XLSX URL for that batch
+    # XLSX_URL = BATCH_XLSX[selected_batch]
 
-    # ─── Campus slider + load Main (sheet 0) & City (sheet 1) from XLSX ───
-    campuses = ["Main", "City", "Both"]
-    selected_campus = st.select_slider(
-        "Show campus",
-        options=campuses,
-        value="Both",
+    # # ─── Campus slider + load Main (sheet 0) & City (sheet 1) from XLSX ───
+    # campuses = ["Main", "City", "Both"]
+    # selected_campus = st.select_slider(
+    #     "Show campus",
+    #     options=campuses,
+    #     value="Both",
+    # )
+
+    # with st.spinner("Loading & normalizing…"):
+    #     df = load_schedule(XLSX_URL)
+
+        # ← NEW: ask the user for their public Google Sheets share link
+    sheet_url = st.text_input(
+        "Paste your Google Sheet URL (e.g. https://docs.google.com/spreadsheets/d/<ID>/edit?usp=sharing)"
     )
+    if not sheet_url:
+        st.warning("Please enter your Google Sheet link above.")
+        st.stop()
+
+    # ← extract the Sheet ID
+    match = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", sheet_url)
+    if not match:
+        st.error("Invalid URL. Make sure it's in the format …/d/<SHEET_ID>/edit …")
+        st.stop()
+    sheet_id = match.group(1)
+
+    # ← build the XLSX‑export URL on the fly
+    XLSX_URL = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+
+    # ─── Campus slider + load sheets 0 & 1 ───
+    campuses = ["Main", "City", "Both"]
+    selected_campus = st.select_slider("Show campus", options=campuses, value="Both")
 
     with st.spinner("Loading & normalizing…"):
         df = load_schedule(XLSX_URL)
